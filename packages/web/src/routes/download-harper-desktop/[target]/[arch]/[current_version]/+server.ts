@@ -42,36 +42,40 @@ const compareVersions = (left: string, right: string) => {
 const isCurrentVersionUpToDate = (currentVersion: string, latestVersion: string) =>
 	compareVersions(currentVersion, latestVersion) >= 0;
 
-const getAssetPrefix = (target: string, arch: string) => {
+const supportsUniversalMacOsUpdate = (target: string, arch: string) => {
 	const normalizedTarget = target.toLowerCase();
 	const normalizedArch = arch.toLowerCase();
 	const isMacOs = ['darwin', 'macos', 'macos-universal', 'apple-darwin'].some((targetName) =>
 		normalizedTarget.includes(targetName),
 	);
+	const isSupportedArch = ['aarch64', 'arm64', 'x86_64', 'x64', 'amd64', 'universal'].includes(
+		normalizedArch,
+	);
 
-	if (!isMacOs) {
-		return null;
-	}
-
-	if (['aarch64', 'arm64'].includes(normalizedArch)) {
-		return 'harper-desktop-macos-arm64';
-	}
-
-	if (['x86_64', 'x64', 'amd64'].includes(normalizedArch)) {
-		return 'harper-desktop-macos-x64';
-	}
-
-	return null;
+	return isMacOs && isSupportedArch;
 };
 
-const findAssetByPrefixAndSuffix = (assets: GitHubReleaseAsset[], prefix: string, suffix: string) =>
-	assets.find((asset) => asset.name.startsWith(prefix) && asset.name.endsWith(suffix));
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-const findUpdateAssets = (release: GitHubRelease, assetPrefix: string) => {
-	const archiveAsset = findAssetByPrefixAndSuffix(release.assets, assetPrefix, '.app.tar.gz');
-	const signatureAsset = findAssetByPrefixAndSuffix(release.assets, assetPrefix, '.app.tar.gz.sig');
+const getUpdateAssetPatterns = (version: string) => {
+	const escapedVersion = escapeRegExp(normalizeVersion(version));
 
-	return archiveAsset == null || signatureAsset == null ? null : { archiveAsset, signatureAsset };
+	return {
+		archive: new RegExp(`^harper-desktop_${escapedVersion}_universal\\.app\\.tar\\.gz$`),
+		signature: new RegExp(`^harper-desktop_${escapedVersion}_universal\\.app\\.tar\\.gz\\.sig$`),
+	};
+};
+
+const findUpdateAssets = (release: GitHubRelease, version: string) => {
+	const updateAssetPatterns = getUpdateAssetPatterns(version);
+	const archiveAsset = release.assets.find((asset) => updateAssetPatterns.archive.test(asset.name));
+	const signatureAsset = release.assets.find((asset) =>
+		updateAssetPatterns.signature.test(asset.name),
+	);
+
+	return archiveAsset == null || signatureAsset == null
+		? null
+		: { archiveAsset, signatureAsset, updateAssetPatterns };
 };
 
 const getSignatureFromCache = async (asset: GitHubReleaseAsset) => {
@@ -114,9 +118,7 @@ export const GET = async ({ params }: RequestEvent) => {
 		return noUpdate();
 	}
 
-	const assetPrefix = getAssetPrefix(target, arch);
-
-	if (assetPrefix == null) {
+	if (!supportsUniversalMacOsUpdate(target, arch)) {
 		console.log(`No Harper Desktop update available for unsupported platform ${target}/${arch}.`);
 		return noUpdate();
 	}
@@ -131,10 +133,14 @@ export const GET = async ({ params }: RequestEvent) => {
 		return noUpdate();
 	}
 
-	const updateAssets = findUpdateAssets(latestRelease, assetPrefix);
+	const updateAssets = findUpdateAssets(latestRelease, latestVersion);
 
 	if (updateAssets == null) {
-		console.log(`No Harper Desktop updater assets found for ${assetPrefix} in ${latestVersion}.`);
+		const updateAssetPatterns = getUpdateAssetPatterns(latestVersion);
+
+		console.log(
+			`No universal Harper Desktop updater assets found in ${latestVersion}. Expected archive pattern: ${updateAssetPatterns.archive.source}. Expected signature pattern: ${updateAssetPatterns.signature.source}.`,
+		);
 		return noUpdate();
 	}
 
